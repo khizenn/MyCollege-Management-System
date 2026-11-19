@@ -4,6 +4,8 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <limits>
 using namespace std;
 
 static string lowerText(string s)
@@ -13,13 +15,43 @@ static string lowerText(string s)
     return s;
 }
 
+// Removes leading and trailing whitespace (spaces, tabs, '\r', etc.)
+static string trimText(const string &s)
+{
+    size_t start = 0;
+    while (start < s.size() && isspace(static_cast<unsigned char>(s[start])))
+        ++start;
+    size_t end = s.size();
+    while (end > start && isspace(static_cast<unsigned char>(s[end - 1])))
+        --end;
+    return s.substr(start, end - start);
+}
+
+static bool isValidEmail(const string &email)
+{
+    size_t at = email.find('@');
+    if (at == string::npos || at == 0 || email.find('@', at + 1) != string::npos)
+        return false;
+    if (email.find(' ') != string::npos)
+        return false;
+    size_t dot = email.find('.', at);
+    // need at least one character between '@' and '.', and one after '.'
+    return dot != string::npos && dot > at + 1 && dot + 1 < email.size();
+}
+
 static string readRequired(const string &prompt)
 {
     string value;
     do
     {
         cout << prompt;
-        getline(cin >> ws, value);
+        if (!getline(cin >> ws, value))
+        {
+            // Input stream closed (EOF) - avoid an infinite loop
+            cout << "\nInput ended unexpectedly. Exiting.\n";
+            exit(1);
+        }
+        value = trimText(value);
         if (value.empty())
             cout << "This field cannot be empty.\n";
     } while (value.empty());
@@ -30,8 +62,9 @@ AuthManager::AuthManager() : nextId(1) { loadUsers(); }
 
 bool AuthManager::emailExists(const string &email) const
 {
+    const string target = lowerText(email);
     for (const User &u : users)
-        if (lowerText(u.email) == lowerText(email))
+        if (lowerText(u.email) == target)
             return true;
     return false;
 }
@@ -42,17 +75,23 @@ void AuthManager::loadUsers()
     if (!file)
         return;
     users.clear();
-    User u;
-    while (file >> u.id)
+    nextId = 1;
+    while (true)
     {
-        file.ignore();
-        getline(file, u.fullName);
-        getline(file, u.email);
-        getline(file, u.password);
-        getline(file, u.role);
-        file >> u.collegeId;
-        file.ignore();
-        getline(file, u.department);
+        User u{};
+        if (!(file >> u.id))
+            break;
+        file.ignore(numeric_limits<streamsize>::max(), '\n');
+        if (!getline(file, u.fullName) ||
+            !getline(file, u.email) ||
+            !getline(file, u.password) ||
+            !getline(file, u.role))
+            break;
+        if (!(file >> u.collegeId))
+            break;
+        file.ignore(numeric_limits<streamsize>::max(), '\n');
+        if (!getline(file, u.department))
+            break;
         users.push_back(u);
         if (u.id >= nextId)
             nextId = u.id + 1;
@@ -62,6 +101,11 @@ void AuthManager::loadUsers()
 void AuthManager::saveUsers() const
 {
     ofstream file("users.txt");
+    if (!file)
+    {
+        cout << "Warning: could not save user data.\n";
+        return;
+    }
     for (const User &u : users)
     {
         file << u.id << '\n'
@@ -82,7 +126,7 @@ bool AuthManager::registerUser()
     while (true)
     {
         u.email = readRequired("Enter email: ");
-        if (u.email.find('@') == string::npos || u.email.find('.', u.email.find('@')) == string::npos)
+        if (!isValidEmail(u.email))
             cout << "Please enter a valid email address.\n";
         else if (emailExists(u.email))
             cout << "Email already registered.\n";
@@ -104,13 +148,18 @@ bool AuthManager::registerUser()
         cout << "Role must be student or faculty.\n";
     }
     cout << "Enter college ID: ";
-    while (!(cin >> u.collegeId))
+    while (!(cin >> u.collegeId) || u.collegeId <= 0)
     {
+        if (cin.eof())
+        {
+            cout << "\nInput ended unexpectedly. Exiting.\n";
+            exit(1);
+        }
         cout << "Enter a valid numeric college ID: ";
         cin.clear();
-        cin.ignore(10000, '\n');
+        cin.ignore(numeric_limits<streamsize>::max(), '\n');
     }
-    cin.ignore(10000, '\n');
+    cin.ignore(numeric_limits<streamsize>::max(), '\n');
     for (const User &existing : users)
     {
         if (existing.collegeId == u.collegeId)
@@ -134,9 +183,10 @@ bool AuthManager::loginUser(User &loggedInUser)
     {
         string email = readRequired("Enter email: ");
         string password = readRequired("Enter password: ");
+        const string emailKey = lowerText(email);
         for (const User &u : users)
         {
-            if (lowerText(u.email) == lowerText(email) && u.password == password)
+            if (lowerText(u.email) == emailKey && u.password == password)
             {
                 loggedInUser = u;
                 cout << "Login successful. Welcome, " << u.fullName << "!\n";
